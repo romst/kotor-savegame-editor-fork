@@ -438,6 +438,9 @@ sub updscrl {
     }
 }
 ############################
+# list of warnings collected while loading a save (see AddWarning/ShowWarnings)
+our @load_warnings;
+
 sub What {
     # called by BrowseCmd
     ############################
@@ -513,12 +516,12 @@ sub What {
     {
         unless ($tree->info('exists',$parm1."#")) {
             #first time opening node
-            SpawnWidgets($parm1);
+            SafeRun("Showing edit widgets", sub { SpawnWidgets($parm1) });
         }
         else{
             if ($parm1 =~ /OtherAreas/) {
                 # show the widget even if it's folded
-                SpawnWidgets($parm1);
+                SafeRun("Showing edit widgets", sub { SpawnWidgets($parm1) });
             }
         }
     }
@@ -534,7 +537,14 @@ sub What {
         PrintScreenshot($parm1);
     }
 
-    my $mode=$tree->getmode($parm1);
+    # The entry can disappear while the widgets above were built: log it instead of crashing.
+    my $mode = $tree->info('exists', $parm1) ? eval { $tree->getmode($parm1) } : undef;
+    unless (defined $mode) {
+        my $parent = join('#', @{[split /#/, $parm1]}[0 .. $#{[split /#/, $parm1]} - 1]);
+        my @siblings = $tree->info('exists', $parent) ? $tree->info('children', $parent) : ('<parent missing>');
+        LogWarning("Tree entry not available (vanished during processing?): $parm1 | children of parent: " . join(', ', @siblings));
+        return;
+    }
 
     if ( defined($leaf_memory{$parm1}) && $leaf_memory{$parm1} eq $mode){  #this bit prevents re-entry
         return;
@@ -550,6 +560,7 @@ sub What {
 
             # print "Levels: $#levels\n";
             #my $gameversion=shift @levels;  #should be 1 or 2 for KotOR1 or KotOR2
+            SafeRun("Populating " . join('/', @levels), sub {
             my $gameversion=$levels[0];
             if ($#levels == 1) {
                 LogInfo "Selected save folder: $levels[1]";
@@ -596,6 +607,8 @@ sub What {
                 elsif ($levels[4] eq 'Stores') 	  { Populate_AreaContainer($parm1); }
                 elsif ($levels[4] eq 'Doors') 	  { Populate_AreaContainer($parm1); }
             }
+            });
+            ShowWarnings();
         }
     }
     #        $numhere->destroy if Tk::Exists($numhere);
@@ -1164,31 +1177,39 @@ sub Populate_Level1 {
 
 
 
-    my $mod_playerlist=$gff_LastModIfo->{Main}{Fields}[$gff_LastModIfo->{Main}->get_field_ix_by_label('Mod_PlayerList')]{Value}[0];
+    my $mod_playerlist;
+    if ($gff_LastModIfo) {
+        my $pl_list = GffVal($gff_LastModIfo->{Main}, 'Mod_PlayerList');
+        $mod_playerlist = $pl_list->[0] if ref $pl_list;
+    }
+    unless ($mod_playerlist) {
+        AddWarning("Player data (module.ifo / Mod_PlayerList) is not available - player entries show N/A and cannot be edited.");
+    }
 
-    my $firstname     =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('FirstName')]{'Value'}{'Substrings'}[0]{'Value'};
-    my $gender        =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Gender')]{'Value'};
-    my $att_str       =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Str')]{'Value'};
-    my $att_dex       =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Dex')]{'Value'};
-    my $att_con       =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Con')]{'Value'};
-    my $att_int       =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Int')]{'Value'};
-    my $att_wis       =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Wis')]{'Value'};
-    my $att_cha       =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Cha')]{'Value'};
-    my $hitpoints     =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('HitPoints')]{'Value'};
-    my $maxhitpoints  =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('MaxHitPoints')]{'Value'};
-    my $forcepoints   =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('ForcePoints')]{'Value'};
-    my $maxforcepoints=$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('MaxForcePoints')]{'Value'};
-    my $min1hp        =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Min1HP')]{'Value'};
-    my $experience    =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Experience')]{'Value'};
-    my $goodevil      =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('GoodEvil')]{'Value'};
-    my $appearance    =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Appearance_Type')]{'Value'};
-    my $portrait      =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('PortraitId')]{'Value'};
-    my $soundset      =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('SoundSetFile')]{'Value'};
-    my $XPosition     =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('XPosition')]{'Value'};
-    my $YPosition     =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('YPosition')]{'Value'};
-    my $ZPosition     =$mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('ZPosition')]{'Value'};
+    my $firstname_val =GffVal($mod_playerlist,'FirstName');
+    my $firstname     =(ref $firstname_val && $firstname_val->{'Substrings'} && $firstname_val->{'Substrings'}[0]) ? $firstname_val->{'Substrings'}[0]{'Value'} : 'N/A';
+    my $gender        =GffVal($mod_playerlist,'Gender','N/A');
+    my $att_str       =GffVal($mod_playerlist,'Str','N/A');
+    my $att_dex       =GffVal($mod_playerlist,'Dex','N/A');
+    my $att_con       =GffVal($mod_playerlist,'Con','N/A');
+    my $att_int       =GffVal($mod_playerlist,'Int','N/A');
+    my $att_wis       =GffVal($mod_playerlist,'Wis','N/A');
+    my $att_cha       =GffVal($mod_playerlist,'Cha','N/A');
+    my $hitpoints     =GffVal($mod_playerlist,'HitPoints','N/A');
+    my $maxhitpoints  =GffVal($mod_playerlist,'MaxHitPoints','N/A');
+    my $forcepoints   =GffVal($mod_playerlist,'ForcePoints','N/A');
+    my $maxforcepoints=GffVal($mod_playerlist,'MaxForcePoints','N/A');
+    my $min1hp        =GffVal($mod_playerlist,'Min1HP','N/A');
+    my $experience    =GffVal($mod_playerlist,'Experience','N/A');
+    my $goodevil      =GffVal($mod_playerlist,'GoodEvil','N/A');
+    my $appearance    =GffVal($mod_playerlist,'Appearance_Type','N/A');
+    my $portrait      =GffVal($mod_playerlist,'PortraitId','N/A');
+    my $soundset      =GffVal($mod_playerlist,'SoundSetFile','N/A');
+    my $XPosition     =GffVal($mod_playerlist,'XPosition','N/A');
+    my $YPosition     =GffVal($mod_playerlist,'YPosition','N/A');
+    my $ZPosition     =GffVal($mod_playerlist,'ZPosition','N/A');
 
-    my $mod_playerequiplist = $mod_playerlist->{Fields}[$mod_playerlist->get_field_ix_by_label('Equip_ItemList')]{Value};
+    my $mod_playerequiplist = GffVal($mod_playerlist,'Equip_ItemList',[]);
 
     my $head="";
     my $implant="";
@@ -1312,7 +1333,7 @@ sub Populate_Level1 {
     $tree->add($treeitem."#Feats#",-text=>"");   $tree->hide('entry',$treeitem."#Feats#");
     $tree->add($treeitem."#Credits",-text=>"Credits: $credits",-data=>'can modify');
     $tree->add($treeitem."#PartyXP",-text=>"Party XP: $partyxp",-data=>'can modify');
-    $tree->add($treeitem."#Inventory",-text=>"Inventory");
+    $tree->add($treeitem."#Inventory",-text=>(defined $gff_inv ? "Inventory" : "Inventory (not in this save)"));
     $tree->add($treeitem."#Inventory#",-text=>"");  $tree->hide('entry',$treeitem."#Inventory#");
     if ($gameversion == 2) {
         $tree->add($treeitem."#Chemicals",-text=>"Chemicals: $chemicals",-data=>'can modify');
@@ -2567,47 +2588,61 @@ sub CommitChanges {
         LogInfo ("GLOBALVARS.res updataed.  $tot_gbl_written bytes written.");
     }
 
-    # write Module.ifo to tempfile
-    my $tmpFile_ModuleIfoGff=Win32API::File::Temp->new();
-    unless (my $tmp=$ifo_gff->write_gff_file($tmpFile_ModuleIfoGff->{'fn'})) {
-        die "Could not write module.ifo to temp file.";
+    # write Module.ifo / .git to tempfiles (only the parts that were loaded)
+    my ($tmpFile_ModuleIfoGff, $tmpFile_LastModuleGitGff);
+    if ($ifo_gff) {
+        $tmpFile_ModuleIfoGff=Win32API::File::Temp->new();
+        unless (my $tmp=$ifo_gff->write_gff_file($tmpFile_ModuleIfoGff->{'fn'})) {
+            die "Could not write module.ifo to temp file.";
+        }
     }
+    else { LogWarning "module.ifo was not loaded - leaving it unchanged."; }
 
-    # write last module git to tempfile
-    my $tmpFile_LastModuleGitGff=Win32API::File::Temp->new();
-    unless (my $tmp=$git_gff->write_gff_file($tmpFile_LastModuleGitGff->{'fn'})) {
-        die "Could not write module.ifo to temp file.";
+    if ($git_gff) {
+        $tmpFile_LastModuleGitGff=Win32API::File::Temp->new();
+        unless (my $tmp=$git_gff->write_gff_file($tmpFile_LastModuleGitGff->{'fn'})) {
+            die "Could not write last module .git to temp file.";
+        }
     }
+    else { LogWarning ".git was not loaded - leaving it unchanged."; }
 
-    # populate the erf_mod with its original data
-    unless (my $tmp=$erf_mod->load_erf()) {
-        die "Failed to read in last module of savegame.";
+    # rebuild the last module .sav (only if it was loaded)
+    my $tmpFile_LastModuleSavErf;
+    if ($erf_mod) {
+        # populate the erf_mod with its original data
+        unless (my $tmp=$erf_mod->load_erf()) {
+            die "Failed to read in last module of savegame.";
+        }
+
+        if ($tmpFile_ModuleIfoGff) {
+            unless (my $tmp=$erf_mod->import_resource($tmpFile_ModuleIfoGff->{'fn'},'Module.ifo')) {
+                die "Failed to import Module.ifo into last module of savegame";
+            }
+        }
+
+        if ($tmpFile_LastModuleGitGff) {
+            LogDebug "lastModuleGitName = ".$git_gff->{'modulename'};
+            unless (my $tmp=$erf_mod->import_resource($tmpFile_LastModuleGitGff->{'fn'}, $git_gff->{'modulename'}.'.git')) {
+                die "Failed to import ".$git_gff->{'modulename'}.".git into last module of savegame";
+            }
+        }
+
+        $tmpFile_LastModuleSavErf=Win32API::File::Temp->new();
+        unless (my $tmp=$erf_mod->write_erf($tmpFile_LastModuleSavErf->{'fn'})) {
+            die "Failed to write last module to temp file.";
+        }
     }
+    else { LogWarning "Last module was not loaded - leaving it unchanged."; }
 
-
-    # insert into erf_mod the new module.ifo file
-    unless (my $tmp=$erf_mod->import_resource($tmpFile_ModuleIfoGff->{'fn'},'Module.ifo')) {
-        die "Failed to import Module.ifo into last module of savegame";
+    # write INVENTORY.res to tempfile (only if it was loaded)
+    my $tmpfil_inv;
+    if ($inv_gff) {
+        $tmpfil_inv=Win32API::File::Temp->new();
+        unless (my $tmp=$inv_gff->write_gff_file($tmpfil_inv->{'fn'})) {
+            die "Could not write INVENTORY.res to temp file.";
+        }
     }
-
-    # insert into erf_mod the new lastModule.git file
-    LogDebug "lastModuleGitName = ".$git_gff->{'modulename'};
-    unless (my $tmp=$erf_mod->import_resource($tmpFile_LastModuleGitGff->{'fn'}, $git_gff->{'modulename'}.'.git')) {
-        die "Failed to import ".$git_gff->{'modulename'}.".git into last module of savegame";
-    }
-
-    # write the erf_mod to tempfile
-    my $tmpFile_LastModuleSavErf=Win32API::File::Temp->new();
-    unless (my $tmp=$erf_mod->write_erf($tmpFile_LastModuleSavErf->{'fn'})) {
-        die "Failed to write last module to temp file.";
-    }
-
-
-    # write INVENTORY.res to tempfile
-    my $tmpfil_inv=Win32API::File::Temp->new();
-    unless (my $tmp=$inv_gff->write_gff_file($tmpfil_inv->{'fn'})) {
-        die "Could not write INVENTORY.res to temp file.";
-    }
+    else { LogWarning "INVENTORY.res was not loaded - leaving it unchanged."; }
 
     # load the original erf_sav
     unless (my $tmp=$erf_sav->load_erf()) {
@@ -2615,13 +2650,17 @@ sub CommitChanges {
     }
 
     # insert into erf_sav the new erf_mod file
-    unless (my $tmp=$erf_sav->import_resource($tmpFile_LastModuleSavErf->{'fn'},$erf_mod->{'modulename'}.".sav")) {
-        die "Failed to import last module of savegame into main savegame data.";
+    if ($tmpFile_LastModuleSavErf) {
+        unless (my $tmp=$erf_sav->import_resource($tmpFile_LastModuleSavErf->{'fn'},$erf_mod->{'modulename'}.".sav")) {
+            die "Failed to import last module of savegame into main savegame data.";
+        }
     }
 
     # insert into erf_sav the new INVENTORY.res file
-    unless (my $tmp=$erf_sav->import_resource($tmpfil_inv->{'fn'},'INVENTORY.res')) {
-        die "Failed to import INVENTORY.res into main savegame data.";
+    if ($tmpfil_inv) {
+        unless (my $tmp=$erf_sav->import_resource($tmpfil_inv->{'fn'},'INVENTORY.res')) {
+            die "Failed to import INVENTORY.res into main savegame data.";
+        }
     }
 
     # insert into the erf_sav any NPC file
@@ -2753,6 +2792,7 @@ sub CommitChanges {
 
     LogDebug "RELOADING DATA";
     LoadData($treeitem);
+    @load_warnings = ();   # already reported when the save was opened
 
     # # Reload
     # # Looking for last module .git file where the inventory of all placeable is stored
@@ -4981,6 +5021,7 @@ sub Populate_Inventory {
     LogInfo("Populating $gv->$gm");
     my $root='#'.$gameversion.'#'.(split /#/,$treeitem)[2];
     my $gff=${$tree->entrycget( $root,-data)}{'GFF-inv'};
+    unless ($gff) { AddWarning("This save has no INVENTORY.res - nothing to show."); return; }
     my $itemlist=$gff->{Main}{Fields}{Value};
     my @items;
     for my $item_struct (@$itemlist) {
@@ -6146,6 +6187,55 @@ sub Generate_Master_Item_List {
 }
 
 
+# ---------------------------------------------------------------------------
+# Robustness helpers: warn instead of crash when parts of a save are missing
+# ---------------------------------------------------------------------------
+# Log a warning and remember it so it can be shown to the user once.
+sub AddWarning {
+    my $msg = shift;
+    LogWarning($msg);
+    push @load_warnings, $msg unless grep { $_ eq $msg } @load_warnings;
+}
+
+# Run a block. If it dies, log + collect a warning instead of propagating.
+sub SafeRun {
+    my ($label, $code) = @_;
+    my @result;
+    my $ok = eval { @result = $code->(); 1 };
+    unless ($ok) {
+        my $err = $@ || 'unknown error';
+        $err =~ s/\s+$//;
+        AddWarning("$label failed: $err");
+        return;
+    }
+    return wantarray ? @result : $result[0];
+}
+
+# Show all collected warnings in ONE dialog, then clear them.
+sub ShowWarnings {
+    return unless @load_warnings;
+    my $text = join("\n\n", map { "- $_" } @load_warnings);
+    @load_warnings = ();
+    $mw->Dialog(
+        -title   => 'Warning',
+        -text    => "Some parts of this save could not be loaded:\n\n$text\n\nThe remaining data is still available.\n ",
+        -font    => ['MS Sans Serif','8'],
+        -buttons => ['Ok']
+    )->Show();
+}
+
+# Safe field read from a GFF struct: returns $default if struct/field is missing.
+sub GffVal {
+    my ($struct, $label, $default) = @_;
+    return $default unless $struct;
+    my $ix = $struct->get_field_ix_by_label($label);
+    return $default unless defined $ix;
+    my $field = $struct->{Fields}[$ix];
+    return $default unless $field;
+    my $v = $field->{Value};
+    return defined $v ? $v : $default;
+}
+
 # custom error handler --> error log, and error msg
 sub Tk::Error {
     my $w = shift;
@@ -6381,55 +6471,74 @@ sub LoadData {
     unless (my $tmp=$erf->read_erf("$registered_path\\$gamedir\\savegame.sav")) {
         die "Could not read $registered_path\\$gamedir\\savegame.sav";
     }
-    my $tmpfil_inv;
-    unless ($tmpfil_inv=$erf->export_resource_to_temp_file("INVENTORY.res")) {                  #export inventory.res as a temp file
-        die "Could not find INVENTORY.res inside of $registered_path\\$gamedir\\savegame.sav";
-    }
-    my $gff_inv=Bioware::GFF->new();                                                            #create GFF for inventory.res
-    unless (my $tmp=$gff_inv->read_gff_file($tmpfil_inv->{'fn'})) {                             #read invenotry.res into GFF
-        die "Could not read from temp file containing INVENTORY.res";
-    }
-    my $tmpFileLastModSav;
-    unless ($tmpFileLastModSav=$erf->export_resource_to_temp_file("$lastModuleName.sav")) {               #export the last module as a temp file
-        die "Could not find $lastModuleName.sav inside of $registered_path\\$gamedir\\savegame.sav";
-    }
-
-    my $erfLastModSav=Bioware::ERF->new();                                                               #create ERF for last module
-    unless (my $tmp=$erfLastModSav->read_erf($tmpFileLastModSav->{'fn'})) {                                     #read last module structure
-        die "Could not read from temp file containing $lastModuleName.sav";
-    }
-    $erfLastModSav->{'tmpfil'}=$tmpFileLastModSav;                                                              #tuck the temp file into the erf for safekeeping
-    $erfLastModSav->{'modulename'}="$lastModuleName";                                                   #tuck the module name into the erf for safekeeping
-
-    my $tmpfil_LastModIfo;
-    unless($tmpfil_LastModIfo=$erfLastModSav->export_resource_to_temp_file("module.ifo")) {                     #export the module.ifo file as a temp file
-        die "Could not find module.ifo inside of $lastModuleName.sav";
-    }
-    my $gff_LastModIfo=Bioware::GFF->new();                                                            #create GFF for module.ifo
-    unless (my $tmp=$gff_LastModIfo->read_gff_file($tmpfil_LastModIfo->{'fn'})) {                             #read module.ifo into GFF
-        die "Could not read from temp file containing module.ifo";
-    }
-
-    # Looking for last module .git file where the inventory of all placeable is stored
-    my $lastModuleGitName;
-    for my $resource (@{$erfLastModSav->{'resources'}}) {
-        if($resource->{'res_ext'} eq "git") {
-            $lastModuleGitName = lc $resource->{'res_ref'};
+    # ---- INVENTORY.res (optional: may be absent, e.g. with an empty inventory) ----
+    my $gff_inv;
+    my $tmpfil_inv = $erf->export_resource_to_temp_file("INVENTORY.res");
+    if ($tmpfil_inv) {
+        $gff_inv=Bioware::GFF->new();
+        unless (my $tmp=$gff_inv->read_gff_file($tmpfil_inv->{'fn'})) {
+            AddWarning("Could not read INVENTORY.res in $registered_path\\$gamedir\\savegame.sav - inventory is unavailable.");
+            $gff_inv=undef;
         }
     }
-
-    # Extracting the .git file as a temp file
-    my $tmpfil_git;
-    unless($tmpfil_git=$erfLastModSav->export_resource_to_temp_file("$lastModuleGitName.git")) {
-        die "Could not find $lastModuleGitName.git inside of $lastModuleName.sav";
+    else {
+        AddWarning("INVENTORY.res not found in $registered_path\\$gamedir\\savegame.sav - inventory is unavailable.");
     }
 
-    # Parsing the .git temp file
-    my $gff_LastModGit=Bioware::GFF->new();                                                            #create GFF for module.ifo
-    unless (my $tmp=$gff_LastModGit->read_gff_file($tmpfil_git->{'fn'})) {                             #read module.ifo into GFF
-        die "Could not read from .git temp file";
+    # ---- last module (optional): player data, module.ifo and .git live in here ----
+    my ($erfLastModSav, $gff_LastModIfo, $gff_LastModGit);
+    my $tmpFileLastModSav = $erf->export_resource_to_temp_file("$lastModuleName.sav");
+    if (!$tmpFileLastModSav) {
+        AddWarning("$lastModuleName.sav not found inside savegame.sav - player data and area objects are unavailable.");
     }
-    $gff_LastModGit->{'modulename'}="$lastModuleGitName";
+    else {
+        my $erfMod=Bioware::ERF->new();
+        unless (my $tmp=$erfMod->read_erf($tmpFileLastModSav->{'fn'})) {
+            AddWarning("Could not read $lastModuleName.sav - player data and area objects are unavailable.");
+            $erfMod=undef;
+        }
+        if ($erfMod) {
+            $erfLastModSav=$erfMod;
+            $erfLastModSav->{'tmpfil'}=$tmpFileLastModSav;         #tuck the temp file into the erf for safekeeping
+            $erfLastModSav->{'modulename'}="$lastModuleName";      #tuck the module name into the erf for safekeeping
+
+            # module.ifo
+            my $tmpfil_LastModIfo = $erfLastModSav->export_resource_to_temp_file("module.ifo");
+            if (!$tmpfil_LastModIfo) {
+                AddWarning("module.ifo not found inside $lastModuleName.sav - player data is unavailable.");
+            }
+            else {
+                my $gff=Bioware::GFF->new();
+                if ($gff->read_gff_file($tmpfil_LastModIfo->{'fn'})) { $gff_LastModIfo=$gff; }
+                else { AddWarning("Could not read module.ifo inside $lastModuleName.sav - player data is unavailable."); }
+            }
+
+            # .git (inventory of all placeables etc.)
+            my $lastModuleGitName;
+            for my $resource (@{$erfLastModSav->{'resources'}}) {
+                if($resource->{'res_ext'} eq "git") {
+                    $lastModuleGitName = lc $resource->{'res_ref'};
+                }
+            }
+            if (!defined $lastModuleGitName) {
+                AddWarning("No .git file inside $lastModuleName.sav - area objects are unavailable.");
+            }
+            else {
+                my $tmpfil_git = $erfLastModSav->export_resource_to_temp_file("$lastModuleGitName.git");
+                if (!$tmpfil_git) {
+                    AddWarning("Could not find $lastModuleGitName.git inside $lastModuleName.sav - area objects are unavailable.");
+                }
+                else {
+                    my $gff=Bioware::GFF->new();
+                    if ($gff->read_gff_file($tmpfil_git->{'fn'})) {
+                        $gff->{'modulename'}="$lastModuleGitName";
+                        $gff_LastModGit=$gff;
+                    }
+                    else { AddWarning("Could not read $lastModuleGitName.git - area objects are unavailable."); }
+                }
+            }
+        }
+    }
 
     $tree->entryconfigure(
       $root,
@@ -6475,6 +6584,7 @@ sub PrintScreenshot {
 
 sub CopyInventory {
     my ($treeitem_source,$datahash)=@_;
+    unless ($datahash->{'GFF-inv'}) { AddWarning("This save has no inventory to copy."); ShowWarnings(); return; }
 
     #for later readability in dialog box...
     my $treeitem_desc=(split /#/,$treeitem_source)[2];
