@@ -668,7 +668,10 @@ sub Populate_EquipTables{
     my @options_human;
     my @options_droid;
     my $id;
-    if( Load($gameversion) == 0 ) { Generate_Master_Item_List($gameversion); }
+    # NOTE: this used to call Load($gameversion), which re-reads the save folders and
+    # deletes the whole tree branch (including the open save). Generate_Master_Item_List
+    # already guards itself via $items{...}, so it can be called directly.
+    Generate_Master_Item_List($gameversion);
 
     if($type == 1)  { @options_human = split(/ /, $equiptables{$gameversion}{human}{heads});    @options_droid = split(/ /, $equiptables{$gameversion}{droid}{heads});    }
     if($type == 2)  { @options_human = split(/ /, $equiptables{$gameversion}{human}{implants}); @options_droid = split(/ /, $equiptables{$gameversion}{droid}{implants}); }
@@ -5922,7 +5925,7 @@ sub Generate_Master_Item_List {
 
         # now get all uti files from templates.bif
         my $bif=Bioware::BIF->new($registered_path,undef,'uti');
-        if ($bif==undef) { $bif=try_extracted_data($gameversion,undef,'uti'); }
+        if (!defined $bif) { $bif=try_extracted_data($gameversion,undef,'uti'); }
         my @templates=(sort keys %{$bif->{BIFs}{'data\\templates.bif'}{Resources}}) ;
         my $tmp_gff=Bioware::GFF->new();
         for my $template (@templates) {
